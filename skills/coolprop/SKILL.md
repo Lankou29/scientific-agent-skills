@@ -1,6 +1,6 @@
 ---
 name: coolprop
-description: Computes real-fluid thermodynamic properties with CoolProp and analyses steady-flow power and refrigeration cycles - Rankine steam cycles, vapour-compression refrigerators and heat pumps, air-standard Brayton gas turbines - with first-law closure, entropy-generation and Carnot checks and equation-of-state validity limits. Use for PropsSI or AbstractState lookups, steam tables, refrigerant p-h and T-s states (R134a, R1234yf, R290, R32, R744, ammonia), saturation domes for diagrams, cycle efficiency or COP, isentropic efficiencies, quality at turbine exit, exergy destruction, humid-air psychrometrics with HAPropsSI, or checking textbook thermodynamics exercises against a reference equation of state.
+description: Computes real-fluid thermodynamic properties with CoolProp and analyses steady-flow power and refrigeration cycles - Rankine steam cycles, vapour-compression refrigerators and heat pumps, transcritical CO2 (R744) cycles with gas cooler and optimal high pressure, air-standard Brayton gas turbines - with first-law closure, entropy-generation and Carnot checks and equation-of-state validity limits. Use for PropsSI or AbstractState lookups, steam tables, refrigerant p-h and T-s states (R134a, R1234yf, R290, R32, R744, ammonia), saturation domes for diagrams, cycle efficiency or COP, isentropic efficiencies, quality at turbine exit, exergy destruction, humid-air psychrometrics with HAPropsSI, or checking textbook thermodynamics exercises against a reference equation of state.
 license: MIT
 compatibility: Requires Python 3.12+ with CoolProp 8.0.0 (pip wheel, no compiler needed). Runs locally without network access or credentials. REFPROP backends need a separately licensed NIST REFPROP installation and are not covered by the tests.
 metadata:
@@ -22,13 +22,15 @@ refrigeration cycle must be evaluated state by state:
 - simple Rankine cycle (pump, boiler, turbine, condenser), with or without superheat;
 - single-stage vapour-compression refrigerator or heat pump (COP, discharge temperature,
   mass flow for a given capacity);
+- transcritical CO2 (R744) refrigerator or heat pump with gas cooler, imposed or
+  COP-optimal high pressure;
 - closed air-standard Brayton cycle with real-gas air, optional regenerator;
 - saturation domes exported as CSV for T-s and p-h diagrams;
 - humid-air (psychrometric) properties with `HAPropsSI` for HVAC and building physics;
 - checking a textbook or exam solution against a reference equation of state.
 
-It does not cover combustion chemistry (use `cantera`), transcritical CO2 gas-cooler
-cycles, multi-stage or cascade cycles, or transient component models. For unit handling
+It does not cover combustion chemistry (use `cantera`), multi-stage, ejector or cascade
+cycles, internal heat exchangers, or transient component models. For unit handling
 and measurement uncertainty on the inputs use `uncertainty-and-units`; for plotting use
 `scientific-visualization`.
 
@@ -89,7 +91,7 @@ Details, fluid names, backends and pitfalls: [references/fluids-and-validity.md]
 
 ## Bundled helper: `scripts/thermo_cycles.py`
 
-Standard argparse CLI and importable module (`rankine`, `refrigeration`, `brayton`, `state`,
+Standard argparse CLI and importable module (`rankine`, `refrigeration`, `transcritical`, `brayton`, `state`,
 `saturation_dome`). Inputs accept unit suffixes (`350C`, `623.15K`, `30bar`, `3MPa`, `10kPa`,
 `1atm`); bare numbers are SI. Write negative values with `=`: `--t-evap=-10C`.
 Text output by default, full JSON with `--json`. Exit code 0 when every check passes,
@@ -110,6 +112,13 @@ python $S rankine --p-high 30bar --p-low 10kPa --t-turbine-in 350C \
 python $S refrigeration --fluid R134a --t-evap=-10C --t-cond 40C --superheat 5 \
     --subcooling 3 --eta-compressor 0.75 --q-evap 5000 --t-cold=-2C --t-hot 30C
 
+# Transcritical CO2: evaporation -5 C, gas-cooler outlet 35 C, 5 K superheat, eta_s = 0.70,
+# optimal gas-cooler pressure searched in (p_crit, 140 bar], sized for 10 kW heating
+python $S transcritical --t-evap=-5C --t-gc-out 35C --superheat 5 \
+    --eta-compressor 0.70 --q-heating 10000
+# same cycle at an imposed gas-cooler pressure
+python $S transcritical --t-evap=-5C --t-gc-out 35C --p-gc 100bar --eta-compressor 0.70
+
 # Brayton: r = 8, T1 = 300 K, T3 = 1300 K, eta_c = 0.85, eta_t = 0.88, regenerator 0.8
 python $S brayton --pressure-ratio 8 --t-turbine-in 1300 \
     --eta-compressor 0.85 --eta-turbine 0.88 --regenerator 0.8
@@ -125,6 +134,8 @@ Results obtained with CoolProp 8.0.0 (computed values, not measurements):
 | Ideal Rankine 3 MPa / 350 C / 10 kPa | eta_th = 0.3344, x4 = 0.813, w_pump = 3.02 kJ/kg |
 | Same, eta_t = 0.85, eta_p = 0.80 | eta_th = 0.2839, x4 = 0.874 (erosion warning), s_gen,turbine = 0.461 kJ/(kg K) |
 | R134a -10 C / 40 C, SH 5 K, SC 3 K, eta_s = 0.75 | COP_R = 3.13, T_discharge = 61.9 C, m = 0.0345 kg/s for 5 kW |
+| R744 -5 C / gas cooler 35 C, ideal compressor | p_gc,opt = 88.8 bar (Liao 2000 correlation: 88.7 bar), COP_R = 3.01 |
+| Same, SH 5 K, eta_s = 0.70, 10 kW heating | p_gc,opt = 88.3 bar, COP_R = 2.12, COP_HP = 3.12, T_discharge = 95.6 C |
 | Brayton ideal, r = 10, 300 K / 1400 K | eta_th = 0.457 (real gas) vs 0.482 (cold-air standard, k = 1.40) |
 
 The JSON contains `states`, `ideal_states` (isentropic outlets), `specific` (J/kg),

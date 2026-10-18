@@ -579,7 +579,7 @@ Package versions below identify the baselines documented by the skills. Follow e
 - Experimental flow measurement: OpenPIV (velocity fields from PIV image pairs, interrogation-window cross-correlation, spurious-vector validation, vorticity/strain-rate/turbulence statistics)
 - Discrete-event simulation: SimPy 4.1.2 with replication, warm-up, and output-analysis guidance
 - Chemical kinetics: [Cantera](skills/cantera/SKILL.md) (homogeneous ignition delay, mechanism snapshots, numerical refinement, and conservation checks)
-- Thermodynamic cycles: [CoolProp](skills/coolprop/SKILL.md) 8.0.0 (real-fluid properties, Rankine, vapour-compression and Brayton cycles with energy-closure, entropy-generation and Carnot checks, saturation domes, humid-air psychrometrics)
+- Thermodynamic cycles: [CoolProp](skills/coolprop/SKILL.md) 8.0.0 (real-fluid properties, Rankine, vapour-compression, transcritical CO2 and Brayton cycles with energy-closure, entropy-generation and Carnot checks, saturation domes, humid-air psychrometrics)
 - Battery experiments: [PyBaMM](skills/pybamm/SKILL.md) (charge/discharge protocols, parameter provenance, numerical checks, and measured-curve comparisons)
 - Symbolic math: SymPy
 

@@ -151,6 +151,54 @@ def test_refrigeration_refuses_transcritical_and_flags_blends():
     assert blend["checks"]["passed"]
 
 
+def test_transcritical_optimum_is_a_maximum_and_matches_liao_correlation():
+    result = module.transcritical("R744", 268.15, 308.15)
+    perf = result["performance"]
+    assert result["checks"]["passed"]
+    assert result["inputs"]["p_gc_optimised"]
+    p_opt = perf["p_gas_cooler_Pa"]
+    assert p_opt > module.fluid_info("R744")["p_crit_Pa"]
+    for delta in (-2e5, 2e5):
+        neighbour = module.transcritical("R744", 268.15, 308.15, p_opt + delta)
+        assert neighbour["performance"]["COP_cooling"] < perf["COP_cooling"]
+    # Liao, Zhao and Jakobsen (2000): (2.778 - 0.0157 te) tgc + (0.381 te - 9.34) bar
+    assert perf["p_gc_opt_liao_2000_Pa"] == pytest.approx(88.73e5, abs=0.01e5)
+    assert p_opt == pytest.approx(perf["p_gc_opt_liao_2000_Pa"], abs=1e5)
+    assert perf["COP_cooling"] == pytest.approx(3.013, abs=2e-3)
+
+
+@pytest.mark.parametrize("t_gc_c", [32.0, 40.0, 45.0])
+def test_transcritical_optimum_rises_with_gas_cooler_temperature(t_gc_c):
+    lower = module.transcritical("R744", 268.15, 273.15 + t_gc_c)["performance"]["p_gas_cooler_Pa"]
+    higher = module.transcritical("R744", 268.15, 273.15 + t_gc_c + 3)["performance"]["p_gas_cooler_Pa"]
+    assert higher > lower
+
+
+def test_transcritical_bounds_balances_and_sizing():
+    result = module.transcritical("R744", 268.15, 308.15, None, 5.0, 0.7, None, 10000.0)
+    perf, spec_ = result["performance"], result["specific"]
+    sgen = result["checks"]["second_law"]["s_gen_J_per_kgK"]
+    assert result["checks"]["passed"]
+    assert sgen["compressor"] > 0 and sgen["expansion_valve"] > 0
+    assert perf["COP_cooling"] < perf["COP_cooling_lorenz"] < perf["COP_cooling_carnot_bound"]
+    assert perf["COP_heating"] == pytest.approx(perf["COP_cooling"] + 1.0, rel=1e-12)
+    assert perf["m_dot_kg_per_s"] * spec_["q_gas_cooler_J_per_kg"] == pytest.approx(10000.0)
+    # a constant isentropic efficiency scales the work only: same optimum as the ideal cycle
+    ideal = module.transcritical("R744", 268.15, 308.15, None, 5.0, 1.0)
+    assert perf["p_gas_cooler_Pa"] == pytest.approx(ideal["performance"]["p_gas_cooler_Pa"], abs=500)
+
+
+def test_transcritical_rejects_invalid_inputs():
+    with pytest.raises(module.CycleError, match="not above p_crit"):
+        module.transcritical("R744", 268.15, 308.15, 70e5)
+    with pytest.raises(module.CycleError, match="t_gc_out must be above"):
+        module.transcritical("R744", 268.15, 260.0)
+    with pytest.raises(module.CycleError, match="not both"):
+        module.transcritical("R744", 268.15, 308.15, None, 0.0, 1.0, 1000.0, 1000.0)
+    narrow = module.transcritical("R744", 268.15, 323.15, None, 0.0, 1.0, None, None, 100e5)
+    assert any("search bound" in w for w in narrow["warnings"])
+
+
 def test_brayton_ideal_vs_cold_air_and_regenerator():
     ideal = module.brayton("Air", 300.0, 101325.0, 10.0, 1400.0)
     perf = ideal["performance"]
@@ -184,6 +232,12 @@ def test_cli_json_and_exit_codes(tmp_path):
     assert json.loads(out.getvalue())["cycle"] == "refrigeration"
 
     assert module.main(["state", "Water", "P=1bar", "T=3000C"]) == 2
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = module.main(["transcritical", "--t-evap=-5C", "--t-gc-out", "35C", "--p-gc", "95bar", "--json"])
+    assert code == 0
+    assert json.loads(out.getvalue())["performance"]["p_gas_cooler_Pa"] == pytest.approx(95e5)
 
     target = tmp_path / "dome.csv"
     assert module.main(["dome", "Water", "--points", "5", "--output", str(target)]) == 0

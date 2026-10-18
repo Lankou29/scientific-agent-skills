@@ -60,8 +60,67 @@ m_dot = Q_evap / q_L
 `COP_HP = COP_R + 1` holds only per kilogram of the same cycle; a heat pump designed for
 heating is specified by `q_H`. Superheat raises the discharge temperature `T2` (lubricant
 limit, often around 120-140 C depending on the compressor, check the manufacturer data).
-Transcritical operation (`T_cond >= T_crit`, typical for R744 in summer) needs a gas-cooler
-model with an optimal high pressure: it is refused by this subcommand.
+Transcritical operation (`T_cond >= T_crit`, typical for R744 in summer) is refused by
+this subcommand: use `transcritical` below.
+
+## Transcritical CO2 (subcommand `transcritical`)
+
+Above the critical pressure (7.377 MPa for CO2, T_crit = 31.0 C) heat is rejected in a
+**gas cooler** without condensation: the fluid temperature falls continuously from `T2`
+to `T3`, and the gas-cooler pressure `p_gc` and outlet temperature `T3` are independent.
+States: 1 compressor inlet (`p_evap`, saturated vapour or `T_evap + superheat`);
+2 compressor outlet at `p_gc > p_crit`; 3 gas-cooler outlet (`p_gc`, `T3`);
+4 valve outlet, `h4 = h3` at `p_evap` (must be two-phase).
+
+```
+q_L = h1 - h4   w_c = h2 - h1   q_H = h2 - h3
+COP_R = q_L / w_c     COP_HP = q_H / w_c
+COP_R,bound  = T1 / (T3 - T1)                      (heat absorbed at T <= T1, rejected at T >= T3)
+T_m,L = q_L / (s1 - s4)   T_m,H = q_H / (s2 - s3)  (entropic mean temperatures)
+COP_R,Lorenz = T_m,L / (T_m,H - T_m,L)
+```
+
+Both references are upper bounds of the actual COP: the cycle entropy balance
+`(s2 - s3) - (s1 - s4) = s_gen,compressor + s_gen,valve >= 0` gives
+`q_H / T_m,H >= q_L / T_m,L`. The Lorenz value is the meaningful one for a gliding
+heat rejection; the Carnot bound with the gas-cooler outlet temperature is much looser.
+
+**Optimal high pressure.** Raising `p_gc` increases the compressor work but also lowers
+`h3` near the critical region (the isotherms of supercritical CO2 are strongly curved),
+which increases `q_L`. The COP therefore has a maximum. With `--p-gc` omitted, the script
+scans 200 pressures in `(1.001 p_crit, p_gc_max]` and refines the best bracket by
+golden-section search, then warns if the optimum lies on a bound. With a constant
+isentropic efficiency the optimum pressure does not depend on `eta_s` (the work is scaled
+by `1/eta_s`); a pressure-ratio-dependent efficiency would shift it.
+
+For CO2 the output includes, as a comparison value, the correlation of Liao, Zhao and
+Jakobsen (2000), *Applied Thermal Engineering* 20(9), 831-841:
+
+```
+p_opt [bar] = (2.778 - 0.0157 t_e) t_gc + (0.381 t_e - 9.34)     (t_e, t_gc in C)
+```
+
+Computed with CoolProp 8.0.0, ideal compressor, no superheat (computed values):
+
+| t_e [C] | t_gc [C] | p_opt script [bar] | Liao [bar] | COP_R at optimum |
+| --- | --- | --- | --- | --- |
+| -10 | 35 | 89.7 | 89.6 | 2.61 |
+| -5 | 35 | 88.8 | 88.7 | 3.01 |
+| 0 | 40 | 102.2 | 101.8 | 2.79 |
+| 5 | 45 | 115.9 | 114.0 | 2.59 |
+| -5 | 50 | 135.9 | 131.6 | 1.72 |
+
+Agreement is within 1 bar up to t_gc = 40 C and degrades to about 4.5 bar at 50 C.
+Using the correlation pressure instead of the computed optimum costs 0.18 % of COP at
+-5 C / 50 C. The curve is asymmetric close to the critical region: at -5 C / 35 C, running
+4 bar below the optimum loses 1.7 % of COP, 4 bar above only 0.75 %; at 50 C both sides
+are flat (0.16 % and 0.12 %).
+
+Practical points: compressor discharge temperatures are high (about 95 C for the
+10 kW heat-pump example), design pressures of 120-140 bar are common for the high side,
+and an internal heat exchanger or an ejector/expander (not modelled) is often used to
+reduce the throttling loss, which is large for CO2 (`s_gen,valve` comparable to the
+compressor's in the examples).
 
 ## Brayton (subcommand `brayton`)
 

@@ -7,6 +7,7 @@ state       one state point from two independent properties (T, P, H, S, D, Q)
 dome        saturation curve (T, p, h, s of both phases) as CSV, for T-s / p-h plots
 rankine     simple Rankine cycle: pump, boiler, turbine, condenser
 refrigeration  single-stage vapour-compression cycle (refrigerator or heat pump)
+transcritical  transcritical CO2 (R744) cycle with gas cooler, optional optimal high pressure
 brayton     closed air-standard Brayton cycle, optional regenerator
 
 Every cycle is solved per kilogram of working fluid with the steady-flow energy
@@ -366,7 +367,7 @@ def refrigeration(
     if t_cond >= info["T_crit_K"]:
         raise CycleError(
             f"t_cond = {t_cond:.2f} K >= T_crit = {info['T_crit_K']:.2f} K: transcritical cycle "
-            "(gas cooler, e.g. R744) is not modelled by this subcommand"
+            "(gas cooler, e.g. R744): use the transcritical subcommand"
         )
     warnings: list[str] = []
     if not info["pure"]:
@@ -445,6 +446,183 @@ def refrigeration(
         "checks": {
             "energy_closure_relative": (q_H - q_L - w_c) / q_H,
             "below_carnot": cop_r < cop_r_carnot + 1e-12,
+            "second_law": _second_law(sgen),
+        },
+        "warnings": warnings,
+    }
+    return _finalise(result)
+
+
+def _transcritical_cop(fluid: str, h1: float, s1: float, p_evap: float, p_gc: float,
+                       t_gc_out: float, eta_compressor: float) -> float:
+    """Cooling COP at gas-cooler pressure p_gc (objective of the pressure optimisation)."""
+    CP = _coolprop()
+    h2s = CP.PropsSI("Hmass", "P", p_gc, "Smass", s1, fluid)
+    h2 = h1 + (h2s - h1) / eta_compressor
+    h3 = CP.PropsSI("Hmass", "P", p_gc, "T", t_gc_out, fluid)
+    q_L = h1 - h3  # h4 = h3
+    return q_L / (h2 - h1) if q_L > 0 else -math.inf
+
+
+def optimal_gas_cooler_pressure(fluid: str, h1: float, s1: float, p_evap: float, t_gc_out: float,
+                                eta_compressor: float, p_min: float, p_max: float) -> tuple[float, bool]:
+    """Maximise the cooling COP over p_gc in [p_min, p_max].
+
+    A 200-point scan brackets the maximum (the COP curve is sharp just above
+    p_crit and flat beyond the optimum), then a golden-section search refines it.
+    Returns (p_opt, at_bound), at_bound True when the optimum sits on an interval end.
+    """
+    n = 200
+    grid = [p_min + (p_max - p_min) * i / (n - 1) for i in range(n)]
+    cops = [_transcritical_cop(fluid, h1, s1, p_evap, p, t_gc_out, eta_compressor) for p in grid]
+    i_best = max(range(n), key=cops.__getitem__)
+    if not math.isfinite(cops[i_best]):
+        raise CycleError("no gas-cooler pressure in the search interval gives a refrigeration effect")
+    lo, hi = grid[max(i_best - 1, 0)], grid[min(i_best + 1, n - 1)]
+    ratio = (math.sqrt(5.0) - 1.0) / 2.0
+    a, b = lo + (1 - ratio) * (hi - lo), lo + ratio * (hi - lo)
+    fa = _transcritical_cop(fluid, h1, s1, p_evap, a, t_gc_out, eta_compressor)
+    fb = _transcritical_cop(fluid, h1, s1, p_evap, b, t_gc_out, eta_compressor)
+    while hi - lo > 1.0:  # 1 Pa resolution, far below any practical control accuracy
+        if fa > fb:
+            hi, b, fb = b, a, fa
+            a = lo + (1 - ratio) * (hi - lo)
+            fa = _transcritical_cop(fluid, h1, s1, p_evap, a, t_gc_out, eta_compressor)
+        else:
+            lo, a, fa = a, b, fb
+            b = lo + ratio * (hi - lo)
+            fb = _transcritical_cop(fluid, h1, s1, p_evap, b, t_gc_out, eta_compressor)
+    p_opt = 0.5 * (lo + hi)
+    return p_opt, i_best in (0, n - 1)
+
+
+def liao_optimal_pressure(t_evap: float, t_gc_out: float) -> float:
+    """Optimal CO2 gas-cooler pressure [Pa] from the Liao, Zhao and Jakobsen (2000) correlation.
+
+    p_opt [bar] = (2.778 - 0.0157 t_e) t_gc + (0.381 t_e - 9.34), temperatures in C
+    (Applied Thermal Engineering 20(9), 831-841). Comparison value only: the
+    correlation was fitted to a specific cycle model, the scripted optimum is computed.
+    """
+    t_e, t_gc = t_evap - T_ZERO_C, t_gc_out - T_ZERO_C
+    return ((2.778 - 0.0157 * t_e) * t_gc + (0.381 * t_e - 9.34)) * 1e5
+
+
+def transcritical(
+    fluid: str = "R744",
+    t_evap: float = 268.15,
+    t_gc_out: float = 308.15,
+    p_gc: float | None = None,
+    superheat: float = 0.0,
+    eta_compressor: float = 1.0,
+    q_evap_target: float | None = None,
+    q_heating_target: float | None = None,
+    p_gc_max: float = 140e5,
+) -> dict:
+    """Single-stage transcritical vapour-compression cycle (typically CO2 / R744).
+
+    States: 1 compressor inlet (p_evap, saturated vapour or t_evap + superheat),
+    2 compressor outlet at the supercritical gas-cooler pressure p_gc,
+    3 gas-cooler outlet (p_gc, t_gc_out), 4 throttling-valve outlet (p_evap, h4 = h3).
+    Above the critical pressure there is no condensation: the gas-cooler outlet
+    temperature and pressure are independent, and the COP has a maximum in p_gc.
+    If p_gc is None it is optimised for maximum cooling COP in (p_crit, p_gc_max].
+    """
+    _check_efficiency("eta_compressor", eta_compressor)
+    if superheat < 0:
+        raise CycleError("superheat is a temperature difference >= 0 K")
+    if t_gc_out <= t_evap:
+        raise CycleError("t_gc_out must be above t_evap")
+    CP = _coolprop()
+    info = fluid_info(fluid)
+    if t_evap >= info["T_crit_K"]:
+        raise CycleError("evaporation needs t_evap below the critical temperature")
+    warnings: list[str] = []
+    if not info["pure"]:
+        warnings.append(f"{info['fluid']} is a pseudo-pure blend model: evaporator pressure from the dew point")
+
+    p_evap = CP.PropsSI("P", "T", t_evap, "Q", 1, fluid)
+    s1 = (
+        state(fluid, "P", p_evap, "Q", 1, "1")
+        if superheat == 0
+        else state(fluid, "P", p_evap, "T", t_evap + superheat, "1")
+    )
+    p_min = info["p_crit_Pa"] * 1.001
+    optimised = p_gc is None
+    if optimised:
+        if p_gc_max <= p_min:
+            raise CycleError("p_gc_max must exceed the critical pressure")
+        p_gc, at_bound = optimal_gas_cooler_pressure(
+            fluid, s1["h_J_per_kg"], s1["s_J_per_kgK"], p_evap, t_gc_out, eta_compressor, p_min, p_gc_max
+        )
+        if at_bound:
+            warnings.append("optimum gas-cooler pressure lies on the search bound: widen --p-gc-max or check inputs")
+    elif p_gc <= info["p_crit_Pa"]:
+        raise CycleError(
+            f"p_gc = {p_gc:.4g} Pa is not above p_crit = {info['p_crit_Pa']:.4g} Pa: "
+            "subcritical heat rejection, use the refrigeration subcommand"
+        )
+
+    s2s = state(fluid, "P", p_gc, "Smass", s1["s_J_per_kgK"], "2s")
+    h2 = s1["h_J_per_kg"] + (s2s["h_J_per_kg"] - s1["h_J_per_kg"]) / eta_compressor
+    s2 = state(fluid, "P", p_gc, "Hmass", h2, "2")
+    s3 = state(fluid, "P", p_gc, "T", t_gc_out, "3")
+    s4 = state(fluid, "P", p_evap, "Hmass", s3["h_J_per_kg"], "4")
+    if s4["quality"] is None:
+        raise CycleError("valve outlet is not two-phase: no evaporation, raise p_gc or lower t_gc_out")
+
+    q_L = s1["h_J_per_kg"] - s4["h_J_per_kg"]
+    w_c = s2["h_J_per_kg"] - s1["h_J_per_kg"]
+    q_H = s2["h_J_per_kg"] - s3["h_J_per_kg"]
+    cop_r = q_L / w_c
+    # Upper bound: heat is absorbed at T <= T1 and rejected at T >= T3, so the entropy
+    # balance of any cycle between these fluid temperatures gives COP_R <= T1 / (T3 - T1).
+    cop_r_bound = s1["T_K"] / (s3["T_K"] - s1["T_K"])
+    # Lorenz reference: entropic mean temperatures of heat absorption and rejection.
+    t_mean_L = q_L / (s1["s_J_per_kgK"] - s4["s_J_per_kgK"])
+    t_mean_H = q_H / (s2["s_J_per_kgK"] - s3["s_J_per_kgK"])
+    cop_lorenz = t_mean_L / (t_mean_H - t_mean_L)
+
+    sgen = {
+        "compressor": s2["s_J_per_kgK"] - s1["s_J_per_kgK"],
+        "expansion_valve": s4["s_J_per_kgK"] - s3["s_J_per_kgK"],
+    }
+    if s1["quality"] is not None:
+        warnings.append("compressor inlet is saturated vapour: no superheat margin against liquid slugging")
+    if p_gc > p_gc_max:
+        warnings.append(f"p_gc = {p_gc / 1e5:.1f} bar exceeds p_gc_max = {p_gc_max / 1e5:.1f} bar")
+
+    p_liao = liao_optimal_pressure(t_evap, t_gc_out) if info["fluid"] == "CarbonDioxide" else None
+
+    if q_evap_target and q_heating_target:
+        raise CycleError("give either a cooling or a heating capacity, not both")
+    m_dot = q_evap_target / q_L if q_evap_target else (q_heating_target / q_H if q_heating_target else None)
+    result = {
+        "cycle": "transcritical",
+        "fluid": info,
+        "inputs": {
+            "t_evap_K": t_evap, "t_gc_out_K": t_gc_out, "p_gc_Pa": p_gc, "p_gc_optimised": optimised,
+            "p_gc_max_Pa": p_gc_max, "superheat_K": superheat, "eta_compressor": eta_compressor,
+        },
+        "states": [s1, s2, s3, s4],
+        "ideal_states": [s2s],
+        "specific": {"q_evap_J_per_kg": q_L, "w_compressor_J_per_kg": w_c, "q_gas_cooler_J_per_kg": q_H},
+        "performance": {
+            "COP_cooling": cop_r,
+            "COP_heating": q_H / w_c,
+            "COP_cooling_carnot_bound": cop_r_bound,
+            "COP_cooling_lorenz": cop_lorenz,
+            "T_mean_absorption_K": t_mean_L,
+            "T_mean_rejection_K": t_mean_H,
+            "p_gas_cooler_Pa": p_gc,
+            "p_gc_opt_liao_2000_Pa": p_liao,
+            "pressure_ratio": p_gc / p_evap,
+            "discharge_temperature_K": s2["T_K"],
+            "m_dot_kg_per_s": m_dot,
+            "compressor_power_W": m_dot * w_c if m_dot else None,
+        },
+        "checks": {
+            "energy_closure_relative": (q_H - q_L - w_c) / q_H,
+            "below_carnot": cop_r < cop_r_bound + 1e-12,
             "second_law": _second_law(sgen),
         },
         "warnings": warnings,
@@ -643,6 +821,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_rf.add_argument("--t-hot", type=parse_temperature, help="heat-sink temperature")
     p_rf.add_argument("--json", action="store_true")
 
+    p_tc = sub.add_parser("transcritical", help="transcritical cycle with gas cooler (CO2 / R744)")
+    p_tc.add_argument("--fluid", default="R744")
+    p_tc.add_argument("--t-evap", required=True, type=parse_temperature, help="evaporating (dew) temperature")
+    p_tc.add_argument("--t-gc-out", required=True, type=parse_temperature, help="gas-cooler outlet temperature")
+    p_tc.add_argument("--p-gc", type=parse_pressure, help="gas-cooler pressure; omit to optimise the COP")
+    p_tc.add_argument("--p-gc-max", type=parse_pressure, default=140e5,
+                      help="upper bound of the optimisation and design limit (default 140bar)")
+    p_tc.add_argument("--superheat", type=float, default=0.0, help="K")
+    p_tc.add_argument("--eta-compressor", type=float, default=1.0, help="isentropic efficiency")
+    capacity = p_tc.add_mutually_exclusive_group()
+    capacity.add_argument("--q-evap", type=float, help="target cooling capacity [W] to size the mass flow")
+    capacity.add_argument("--q-heating", type=float, help="target heating capacity [W] to size the mass flow")
+    p_tc.add_argument("--json", action="store_true")
+
     p_br = sub.add_parser("brayton", help="closed air-standard Brayton cycle")
     p_br.add_argument("--fluid", default="Air")
     p_br.add_argument("--t-compressor-in", type=parse_temperature, default=300.0)
@@ -682,6 +874,9 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "refrigeration":
             result = refrigeration(args.fluid, args.t_evap, args.t_cond, args.superheat, args.subcooling,
                                    args.eta_compressor, args.q_evap, args.t_cold, args.t_hot)
+        elif args.command == "transcritical":
+            result = transcritical(args.fluid, args.t_evap, args.t_gc_out, args.p_gc, args.superheat,
+                                   args.eta_compressor, args.q_evap, args.q_heating, args.p_gc_max)
         else:
             result = brayton(args.fluid, args.t_compressor_in, args.p_low, args.pressure_ratio,
                              args.t_turbine_in, args.eta_compressor, args.eta_turbine, args.regenerator)
