@@ -844,6 +844,9 @@ packages = []
 python = "3.12"
 packages = ["cantera==3.2.0", "numpy==2.5.3"]
 
+[skills.coolprop]
+packages = ["CoolProp==8.0.0"]
+
 [skills.cellprofiler]
 python = "3.12"
 packages = ["numpy==2.5.3", "tifffile==2026.9.20"]
