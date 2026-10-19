@@ -133,8 +133,10 @@ def normalize(item: dict[str, Any], edition: str) -> dict[str, Any]:
         or clean(a.get("name"))
         for a in item.get("author") or []
     ]
-    title = clean(" ".join(item.get("title") or []))
-    subtitle = clean(" ".join(item.get("subtitle") or []))
+    # Older records deposit the English and German titles as two entries;
+    # keep the first (the edition's own language) instead of gluing them.
+    title = clean((item.get("title") or [""])[0])
+    subtitle = clean((item.get("subtitle") or [""])[0])
     landing = next(
         (
             link["URL"]

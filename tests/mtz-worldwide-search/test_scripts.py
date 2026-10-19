@@ -1,8 +1,10 @@
 """Offline tests for the mtz-worldwide-search script.
 
 No network: `fetch_json` is patched to serve fixtures that are trimmed copies of
-real Crossref responses captured on 2026-10-18 (hydrogen-engine query on ISSN
-2192-9114, and the record for DOI 10.1007/s38313-023-1503-y).
+real Crossref responses: a hydrogen-engine query on ISSN 2192-9114 and the
+record for DOI 10.1007/s38313-023-1503-y (captured 2026-10-18), and a
+"hydrogen engine" query whose 2007 record carries an English and a German
+title (captured 2026-10-19).
 
 Run from the repository root:
 
@@ -97,6 +99,12 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(first["date"], "2026-02-13")
         self.assertEqual(first["journal"], "MTZ worldwide")
         self.assertTrue(first["springer_url"].startswith("https://link.springer.com/article/"))
+
+    def test_bilingual_title_keeps_first_entry(self) -> None:
+        _, out, _ = _run(["hydrogen engine", "--format", "json"], "works_bilingual_title.json")
+        record = json.loads(out)["records"][2]
+        self.assertEqual(record["doi"], "10.1007/bf03226832")
+        self.assertEqual(record["title"], "The Bi-fuel V12 engine of the new BMW Hydrogen 7")
 
     def test_issue_filter_matches_double_issue(self) -> None:
         _, out, _ = _run(["x", "--volume", "87", "--issue", "3", "--format", "json"], "works_hydrogen.json")

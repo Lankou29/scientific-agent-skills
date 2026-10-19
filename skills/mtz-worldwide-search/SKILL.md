@@ -4,7 +4,7 @@ description: Searches the article metadata of MTZ worldwide, Springer's English-
 license: MIT
 compatibility: Requires Python 3.10+ (standard library only) and network access to api.crossref.org. No API key. Full text on link.springer.com is mostly behind a Springer subscription.
 metadata:
-  version: "1.0"
+  version: "1.1"
   skill-author: lankou29
   upstream-api: Crossref REST API
   last-reviewed: "2026-10-18"
@@ -45,6 +45,8 @@ Checked against Crossref on 2026-10-18:
   worldwide edition, German terms (`"Wasserstoffmotor"`) for `--edition de`.
 - Most MTZ worldwide articles are translations of MTZ articles: the same work often
   appears in both editions with different DOIs. Cite the edition actually read.
+- Some older records (seen on a 2007 article) deposit both an English and a German title;
+  the script keeps the first one only.
 - Editorials, interviews and news items are also typed `journal-article`; check the
   page count and title before treating a hit as a technical paper.
 - Full text on link.springer.com usually requires an institutional subscription.
