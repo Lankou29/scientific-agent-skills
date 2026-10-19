@@ -100,6 +100,9 @@ packages = []
 [skills.paper-lookup]
 packages = []
 
+[skills.mtz-worldwide-search]
+packages = []
+
 [skills.paperzilla]
 packages = []
 
